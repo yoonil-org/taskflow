@@ -1,0 +1,7 @@
+{
+  "project": "taskflow-api",
+  "region": "eu-west",
+  "replicas": 2,
+  "resources": { "gpu": "" },
+  "env": { "NODE_ENV": "production" }
+}
