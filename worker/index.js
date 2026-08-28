@@ -3,9 +3,7 @@ const { Pool } = require("pg");
 
 async function withRetry(fn, label, maxAttempts = 10, baseDelayMs = 1000) {
   for (let i = 1; i <= maxAttempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
+    try { return await fn(); } catch (err) {
       if (i === maxAttempts) throw err;
       const delay = Math.min(baseDelayMs * 2 ** (i - 1), 30000);
       console.warn(`[${label}] attempt ${i} failed: ${err.message}. Retrying in ${delay}ms...`);
@@ -22,15 +20,40 @@ async function run() {
   console.log("[postgres] connected");
 
   await withRetry(() => client.connect(), "redis");
-  console.log("taskflow-worker ready, polling queue...");
+  console.log("taskflow-worker ready, polling task-queue...");
 
   while (true) {
     const job = await client.brPop("task-queue", 5);
     if (!job) continue;
-    const { title } = JSON.parse(job.element);
-    await pg.query("INSERT INTO tasks (title) VALUES ($1)", [title]);
-    await client.del("tasks");
-    console.log("processed:", title);
+
+    let payload;
+    try { payload = JSON.parse(job.element); } catch {
+      console.warn("invalid job payload, skipping:", job.element); continue;
+    }
+
+    const { action, title, priority, id, done } = payload;
+
+    try {
+      if (action === "create" && title) {
+        const { rows } = await pg.query(
+          "INSERT INTO tasks (title, priority) VALUES ($1, $2) RETURNING id, title",
+          [title, priority ?? "normal"]
+        );
+        console.log(`[worker] created task #${rows[0].id}: "${rows[0].title}"`);
+      } else if (action === "toggle" && id !== undefined) {
+        await pg.query("UPDATE tasks SET done = $1 WHERE id = $2", [!!done, id]);
+        console.log(`[worker] task #${id} done=${done}`);
+      } else if (action === "delete" && id) {
+        await pg.query("DELETE FROM tasks WHERE id = $1", [id]);
+        console.log(`[worker] deleted task #${id}`);
+      } else {
+        console.warn("[worker] unknown job:", payload); continue;
+      }
+      // Bust cache after every write
+      await client.del("tasks").catch(() => null);
+    } catch (err) {
+      console.error("[worker] job failed:", err.message, payload);
+    }
   }
 }
 
