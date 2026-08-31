@@ -1,0 +1,7 @@
+version: "1"
+services:
+  - name: taskflow-worker
+    image: registry-cli.computeportal.io/cp-cli/taskflow-worker:latest
+    replicas: 1
+    health_check:
+      type: none
