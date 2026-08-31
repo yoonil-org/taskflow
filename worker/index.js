@@ -13,17 +13,35 @@ async function withRetry(fn, label, maxAttempts = 10, baseDelayMs = 1000) {
 }
 
 const pg = new Pool({ connectionString: process.env.DATABASE_URL });
-const client = redis.createClient({ url: process.env.REDIS_URL });
+
+function makeRedisClient() {
+  return redis.createClient({ url: process.env.REDIS_URL });
+}
+
+async function connectRedis(client) {
+  await withRetry(() => client.connect(), "redis");
+  console.log("[redis] connected");
+  return client;
+}
 
 async function run() {
   await withRetry(() => pg.query("SELECT 1"), "postgres");
   console.log("[postgres] connected");
 
-  await withRetry(() => client.connect(), "redis");
+  let client = await connectRedis(makeRedisClient());
   console.log("taskflow-worker ready, polling task-queue...");
 
   while (true) {
-    const job = await client.brPop("task-queue", 5);
+    let job;
+    try {
+      job = await client.brPop("task-queue", 5);
+    } catch (err) {
+      console.warn("[redis] brPop error:", err.message, "— reconnecting...");
+      try { await client.quit(); } catch (_) {}
+      client = await connectRedis(makeRedisClient());
+      continue;
+    }
+
     if (!job) continue;
 
     let payload;
